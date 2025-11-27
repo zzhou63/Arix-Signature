@@ -52,3 +52,9 @@ Ensure Node.js (v18+ recommended) is installed on your machine.
 ```bash
 npm install
 ```
+
+### 3. Start
+
+```bash
+npm run dev
+```

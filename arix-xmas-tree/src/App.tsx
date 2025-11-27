@@ -1,211 +1,222 @@
-import React, { useMemo, useRef, useState, useTransition } from 'react';
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import React, { useMemo, useRef, useState } from 'react';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { Environment, OrbitControls, ContactShadows } from '@react-three/drei';
 import { EffectComposer, Bloom, ToneMapping } from '@react-three/postprocessing';
 import * as THREE from 'three';
-import { random } from 'maath'; // 用于生成随机数，如果未安装可使用自定义函数
 
-// --- 1. 配置常量 (Art Direction Config) ---
+// --- 1. 配置常量 & 风格定义 ---
 const CONFIG = {
-  count: 1500, // 粒子数量 (奢华感需要密度)
-  colors: ['#004225', '#0f5e3e', '#FFD700', '#C5A059'], // 祖母绿 + 两种金色
-  scatterRadius: 15, // 散落状态的爆炸范围
-  treeHeight: 8,     // 树高
-  treeRadius: 3.5,   // 树底半径
-  animSpeed: 2.5,    // 聚合/散开的速度
+  count: 1200, // 粒子数量
+  colors: ['#003311', '#005522', '#FFD700', '#E6C200'], // 深祖母绿 + 奢华金
+  scatterRadius: 20,
+  treeHeight: 9,
+  treeRadius: 4,
+  animSpeed: 2.0,
 };
 
-// --- 2. 辅助数学函数 (Math Helpers) ---
+const GOLD_COLOR = '#e5c07b';
+const FONT_FAMILY = '"Cinzel", serif';
 
-/**
- * 生成双位置系统数据
- * @param count 数量
- */
+// --- 2. 辅助数学函数 (包含树星逻辑) ---
 const generateData = (count: number) => {
-  const scatterPositions = new Float32Array(count * 3);
-  const treePositions = new Float32Array(count * 3);
-  const colors = new Float32Array(count * 3);
-  const scales = new Float32Array(count);
-  
+  // 多加一个粒子作为顶部的星星
+  const totalCount = count + 1;
+  const scatterPositions = new Float32Array(totalCount * 3);
+  const treePositions = new Float32Array(totalCount * 3);
+  const colors = new Float32Array(totalCount * 3);
+  const scales = new Float32Array(totalCount);
   const dummyColor = new THREE.Color();
 
+  // A. 生成树身粒子
   for (let i = 0; i < count; i++) {
     const i3 = i * 3;
-
-    // A. Scatter Position: 随机分布在球体中
-    // 使用极坐标随机分布，制造“星尘”感
+    // Scatter Position
     const r = CONFIG.scatterRadius * Math.cbrt(Math.random());
     const theta = Math.random() * 2 * Math.PI;
     const phi = Math.acos(2 * Math.random() - 1);
-    
     scatterPositions[i3] = r * Math.sin(phi) * Math.cos(theta);
-    scatterPositions[i3 + 1] = r * Math.sin(phi) * Math.sin(theta) + 2; // 稍微抬高一点
+    scatterPositions[i3 + 1] = r * Math.sin(phi) * Math.sin(theta) + CONFIG.treeHeight/2;
     scatterPositions[i3 + 2] = r * Math.cos(phi);
 
-    // B. Tree Position: 斐波那契螺旋圆锥 (Fibonacci Spiral Cone)
-    // 这种排列方式比纯随机更优雅，更有“设计感”
-    const percent = i / count; 
-    const y = percent * CONFIG.treeHeight; // 高度从 0 到 h
-    const radiusAtY = (1 - percent) * CONFIG.treeRadius; // 越往上半径越小
-    const angle = i * 2.4; // 黄金角近似值，制造螺旋
-
+    // Tree Position (Fibonacci Spiral)
+    const percent = i / count;
+    const y = percent * CONFIG.treeHeight;
+    const radiusAtY = (1 - percent) * CONFIG.treeRadius;
+    const angle = i * 2.4;
     treePositions[i3] = Math.cos(angle) * radiusAtY;
-    treePositions[i3 + 1] = y - CONFIG.treeHeight / 2 + 2; // 居中调整
+    treePositions[i3 + 1] = y - CONFIG.treeHeight / 2;
     treePositions[i3 + 2] = Math.sin(angle) * radiusAtY;
 
-    // C. Colors & Scales
-    // 随机分配金色或绿色，金色占比少但亮
-    const isGold = Math.random() > 0.7;
-    dummyColor.set(isGold ? CONFIG.colors[2 + Math.floor(Math.random()*2)] : CONFIG.colors[Math.floor(Math.random()*2)]);
+    // Color & Scale
+    const colorSet = Math.random() > 0.6 ? 2 : 0; // 金色少一点
+    dummyColor.set(CONFIG.colors[colorSet + Math.floor(Math.random() * 2)]);
     dummyColor.toArray(colors, i3);
-
-    // 顶部粒子更小，底部更大
-    scales[i] = Math.random() * 0.5 + 0.2; 
+    scales[i] = Math.random() * 0.6 + 0.15;
   }
 
-  return { scatterPositions, treePositions, colors, scales };
+  // B. 生成顶部树星 (最后一个粒子)
+  const starIndex = count;
+  const i3 = starIndex * 3;
+  // Star Scatter Position (在上方随机)
+  scatterPositions[i3] = (Math.random()-0.5) * 5;
+  scatterPositions[i3+1] = CONFIG.treeHeight + 5;
+  scatterPositions[i3+2] = (Math.random()-0.5) * 5;
+  // Star Tree Position (正顶点)
+  treePositions[i3] = 0;
+  treePositions[i3+1] = CONFIG.treeHeight / 2 + 0.8;
+  treePositions[i3+2] = 0;
+  // Star Color (纯金)
+  dummyColor.set(CONFIG.colors[2]).toArray(colors, i3);
+  // Star Scale (特大)
+  scales[starIndex] = 2.5;
+
+  return { scatterPositions, treePositions, colors, scales, totalCount };
 };
 
-// --- 3. 核心组件 (The Artifact) ---
-
+// --- 3. 核心 3D 组件 ---
 const SignatureTree = ({ mode }: { mode: 'SCATTERED' | 'TREE_SHAPE' }) => {
   const meshRef = useRef<THREE.InstancedMesh>(null);
-  const { scatterPositions, treePositions, colors, scales } = useMemo(() => generateData(CONFIG.count), []);
+  const { scatterPositions, treePositions, colors, scales, totalCount } = useMemo(() => generateData(CONFIG.count), []);
   const dummy = useMemo(() => new THREE.Object3D(), []);
-  
-  // 动画状态引用 (0 = Scattered, 1 = Tree)
   const progress = useRef(0);
 
   useFrame((state, delta) => {
     if (!meshRef.current) return;
-
-    // 1. 平滑状态过渡 (State Transition)
-    const target = mode === 'TREE_SHAPE' ? 1 : 0;
-    // 使用阻尼平滑插值 (Dampening)
-    progress.current = THREE.MathUtils.lerp(progress.current, target, delta * CONFIG.animSpeed);
-
+    progress.current = THREE.MathUtils.lerp(progress.current, mode === 'TREE_SHAPE' ? 1 : 0, delta * CONFIG.animSpeed);
     const t = progress.current;
-    
-    // 2. 遍历并更新每个实例矩阵 (Matrix Update)
-    for (let i = 0; i < CONFIG.count; i++) {
-      const i3 = i * 3;
 
-      // 获取当前插值位置
+    for (let i = 0; i < totalCount; i++) {
+      const i3 = i * 3;
+      // 位置插值
       const x = THREE.MathUtils.lerp(scatterPositions[i3], treePositions[i3], t);
       const y = THREE.MathUtils.lerp(scatterPositions[i3 + 1], treePositions[i3 + 1], t);
       const z = THREE.MathUtils.lerp(scatterPositions[i3 + 2], treePositions[i3 + 2], t);
-
-      // 添加“呼吸”动效 (Breathing) - 让奢华感是活的
-      // 当 t 接近 1 (树形态) 时，呼吸幅度小；t 接近 0 (散落) 时，漂浮幅度大
+      
+      // 呼吸与旋转动效
       const time = state.clock.elapsedTime;
-      const floatRange = 0.1 + (1 - t) * 0.5; 
-      const floatY = Math.sin(time * 0.5 + i * 0.1) * floatRange;
+      const isStar = i === totalCount - 1;
+      // 星星呼吸慢一点，其他快一点
+      const floatY = Math.sin(time * (isStar ? 0.5 : 1) + i * 0.1) * (isStar ? 0.1 : 0.05) * (1-t*0.5);
 
-      // 旋转动效：散落时乱转，聚合时轻微自旋
-      const rotX = (1-t) * time * 0.2;
-      const rotY = time * 0.1 + (i * 0.01);
-      
       dummy.position.set(x, y + floatY, z);
-      dummy.rotation.set(rotX, rotY, 0);
-      dummy.scale.setScalar(scales[i] * (0.5 + 0.5 * t)); // 聚拢时变大一点
+      // 星星只自转，不乱转
+      dummy.rotation.set(isStar ? 0 : (1-t)*time, time * 0.2 + i*0.01, 0);
+      const currentScale = scales[i] * (isStar ? 1 : (0.3 + 0.7 * t));
+      dummy.scale.setScalar(currentScale);
       dummy.updateMatrix();
-      
       meshRef.current.setMatrixAt(i, dummy.matrix);
     }
-    
     meshRef.current.instanceMatrix.needsUpdate = true;
   });
 
   return (
-    <instancedMesh ref={meshRef} args={[undefined, undefined, CONFIG.count]}>
-      {/* 几何体：使用八面体或四面体，比球体更有钻石切割感，反光更好 */}
-      <octahedronGeometry args={[0.2, 0]} />
-      {/* 材质：高物理感，强调金属和光泽 */}
+    // 开启 castShadow 和 receiveShadow 让宝石之间可以互相投影，增加真实感
+    <instancedMesh ref={meshRef} args={[undefined, undefined, totalCount]} castShadow receiveShadow>
+      <octahedronGeometry args={[0.3, 0]} />
       <meshPhysicalMaterial 
         vertexColors 
-        toneMapped={false} // 让 Bloom 更强烈
-        roughness={0.15}   // 光滑
-        metalness={0.9}    // 纯金属质感
-        emissiveIntensity={0.5} // 自发光微量
+        toneMapped={false}
+        roughness={0.1}   // 极度光滑
+        metalness={0.95}  // 高金属度
+        emissiveIntensity={0} // 关闭自发光，完全靠外部光照
+        envMapIntensity={1}
       />
       <instancedBufferAttribute attach="instanceColor" args={[colors, 3]} />
     </instancedMesh>
   );
 };
 
-// --- 4. 场景组装 (Scene Setup) ---
-
-export default function ArixChristmasExperience() {
-  const [mode, setMode] = useState<'SCATTERED' | 'TREE_SHAPE'>('TREE_SHAPE');
-  
-  // 简单的 UI 切换逻辑
-  const toggleMode = () => setMode(prev => prev === 'TREE_SHAPE' ? 'SCATTERED' : 'TREE_SHAPE');
-
+// --- 4. 全新奢华 UI 组件 ---
+const LuxuryUI = ({ mode, toggleMode }: { mode: 'SCATTERED' | 'TREE_SHAPE', toggleMode: () => void }) => {
   return (
-    <div style={{ width: '100vw', height: '100vh', background: '#050505' }}>
-      <Canvas 
-        camera={{ position: [0, 0, 12], fov: 45 }}
-        gl={{ antialias: false }} // 后期处理通常建议关闭原生 AA
-        dpr={[1, 1.5]} // 性能优化
-      >
-        {/* A. 奢华灯光系统 */}
-        <ambientLight intensity={0.5} color="#001a10" />
-        <spotLight position={[10, 20, 10]} angle={0.3} penumbra={1} intensity={2} color="#ffd700" castShadow />
-        {/* 背光/轮廓光，制造电影感 */}
-        <spotLight position={[-10, 5, -10]} angle={0.5} intensity={5} color="#00ff88" />
-        
-        {/* B. 环境贴图 - 提供金属反射源 */}
-        <Environment preset="city" environmentIntensity={0.8} />
-
-        {/* C. 核心组件 */}
-        <SignatureTree mode={mode} />
-
-        {/* D. 后期特效 - 灵魂所在 */}
-        <EffectComposer disableNormalPass>
-          <Bloom 
-            luminanceThreshold={1.1} // 只有非常亮的部分才会发光（金属高光）
-            mipmapBlur 
-            intensity={1.5} 
-            radius={0.6}
-          />
-          <ToneMapping />
-        </EffectComposer>
-
-        <ContactShadows opacity={0.5} scale={20} blur={2} far={4} color="#000000" />
-        <OrbitControls 
-          enablePan={false} 
-          minPolarAngle={Math.PI / 4} 
-          maxPolarAngle={Math.PI / 1.8}
-          autoRotate={mode === 'TREE_SHAPE'} // 树形态时自动展示
-          autoRotateSpeed={0.5}
-        />
-      </Canvas>
-
-      {/* E. 交互 UI */}
-      <div style={{
-        position: 'absolute', bottom: 50, left: '50%', transform: 'translateX(-50%)',
-        textAlign: 'center', fontFamily: 'Cinzel, serif', pointerEvents: 'none'
-      }}>
-        <h1 style={{ 
-          color: '#e5c07b', margin: 0, fontSize: '2rem', letterSpacing: '0.2em', textTransform: 'uppercase',
-          textShadow: '0 0 10px rgba(229, 192, 123, 0.5)'
-        }}>
-          The Arix Signature
+    <div style={{
+      position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
+      padding: '60px', boxSizing: 'border-box', pointerEvents: 'none',
+      display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
+      fontFamily: FONT_FAMILY, color: GOLD_COLOR, zIndex: 10
+    }}>
+      {/* 左上角标题区 */}
+      <div>
+        <h1 style={{ margin: 0, fontSize: '4rem', lineHeight: 0.9, letterSpacing: '0.05em', fontWeight: 700 }}>
+          GRAND<br/>LUXURY
         </h1>
-        <button 
+        <div style={{ 
+          display: 'inline-block', border: `1px solid ${GOLD_COLOR}`, padding: '6px 12px', 
+          marginTop: '16px', fontSize: '0.9rem', letterSpacing: '0.2em', fontWeight: 400
+        }}>
+          INTERACTIVE TREE
+        </div>
+      </div>
+
+      {/* 右下角操作区 */}
+      <div style={{ textAlign: 'right', alignSelf: 'flex-end' }}>
+        <button
           onClick={toggleMode}
           style={{
-            marginTop: '20px', padding: '12px 30px', 
-            background: 'transparent', border: '1px solid #e5c07b', color: '#e5c07b',
-            cursor: 'pointer', fontSize: '0.8rem', letterSpacing: '0.1em',
-            pointerEvents: 'auto', transition: 'all 0.3s'
+            background: 'transparent', border: `2px solid ${GOLD_COLOR}`, color: GOLD_COLOR,
+            padding: '16px 48px', fontSize: '1.1rem', letterSpacing: '0.2em', cursor: 'pointer',
+            pointerEvents: 'auto', fontFamily: FONT_FAMILY, transition: 'all 0.3s'
           }}
-          onMouseOver={(e) => e.currentTarget.style.background = 'rgba(229, 192, 123, 0.1)'}
-          onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
+          onMouseOver={(e) => { e.currentTarget.style.background = GOLD_COLOR; e.currentTarget.style.color = '#000'; }}
+          onMouseOut={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = GOLD_COLOR; }}
         >
           {mode === 'TREE_SHAPE' ? 'DISPERSE' : 'ASSEMBLE'}
         </button>
+        <div style={{ marginTop: '20px', fontSize: '0.75rem', letterSpacing: '0.15em', opacity: 0.7, lineHeight: 1.5 }}>
+          EST. 2024<br/>THE GOLD STANDARD
+        </div>
       </div>
     </div>
+  );
+};
+
+// --- 5. 主场景 ---
+export default function App() {
+  const [mode, setMode] = useState<'SCATTERED' | 'TREE_SHAPE'>('TREE_SHAPE');
+
+  return (
+    <>
+      <Canvas shadows camera={{ position: [0, 2, 14], fov: 40 }} gl={{ antialias: false }}>
+        <color attach="background" args={['#000000']} />
+        
+        {/* --- 核心：戏剧性布光 --- */}
+        <ambientLight intensity={0.02} /> {/* 极暗环境光 */}
+        
+        {/* 主聚光灯：从正上方打下，制造光锥和强烈阴影 */}
+        <spotLight
+          position={[0, 30, 0]}
+          angle={0.25}       // 光锥角度
+          penumbra={0.4}     // 边缘柔和度
+          intensity={20}     // 极高强度
+          color="#fffdf0"    // 暖白光
+          castShadow
+          shadow-mapSize={[2048, 2048]} // 高质量阴影
+          shadow-bias={-0.0001}
+          target-position={[0, -2, 0]}
+        />
+        
+        {/* 辅助侧逆光：勾勒边缘轮廓 */}
+        <spotLight position={[10, 5, -10]} angle={0.4} intensity={3} color="#e5c07b" />
+        <spotLight position={[-10, 10, 5]} angle={0.4} intensity={1} color="#005522" />
+
+        {/* 环境反射：调暗，只提供金属反射源 */}
+        <Environment preset="lobby" environmentIntensity={0.1} />
+
+        <SignatureTree mode={mode} />
+
+        {/* 接触阴影：强调落地感 */}
+        <ContactShadows position={[0, -CONFIG.treeHeight/2 - 0.5, 0]} opacity={0.8} scale={25} blur={2.5} far={10} color="#000" />
+
+        {/* 后期处理：辉光 */}
+        <EffectComposer disableNormalPass>
+          <Bloom luminanceThreshold={1.5} mipmapBlur intensity={1.2} radius={0.5} />
+          <ToneMapping />
+        </EffectComposer>
+
+        <OrbitControls enablePan={false} enableZoom={false} minPolarAngle={Math.PI/3} maxPolarAngle={Math.PI/1.8} autoRotate={mode === 'TREE_SHAPE'} autoRotateSpeed={0.3} />
+      </Canvas>
+
+      <LuxuryUI mode={mode} toggleMode={() => setMode(m => m === 'TREE_SHAPE' ? 'SCATTERED' : 'TREE_SHAPE')} />
+    </>
   );
 }
